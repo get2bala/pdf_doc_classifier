@@ -168,6 +168,8 @@ def test_scan_registers_and_queues_ocr_and_deduplicates_content(tmp_path):
     assert len(registered) == 1
     assert db.jobs[0]["job_type"] == "OCR"
     assert db.jobs[0]["items_total"] == 3
+    assert "Duplicate ignored" in coordinator.last_notice
+    assert "copy.pdf" in coordinator.last_notice
 
 
 @pytest.mark.parametrize("mode,status", [

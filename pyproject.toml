@@ -24,7 +24,13 @@ pdf-document-classifier = "main_window:main"
 [tool.setuptools]
 py-modules = [
     "main_window", "database", "pdf_engine", "classifier", "dialogs",
-    "dashboard", "workflow",
+    "dashboard", "workflow", "review_workspace", "thumbnail_service",
+    "thumbnail_adapter", "appearance", "help_dialogs",
+]
+
+[tool.setuptools.data-files]
+"share/pdf-document-classifier/assets" = [
+    "assets/pdf-classifier-icon-256.png",
 ]
 
 [tool.pytest.ini_options]

@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from dashboard import DashboardWidget, STATUS_FILTERS
+from dashboard import DashboardWidget
 from database import DatabaseManager
 from dialogs import SettingsDialog
 from main_window import ClassifierWindow
@@ -21,8 +21,8 @@ def app():
 class DashboardDatabase:
     def get_dashboard_summary(self):
         return {
-            "new": 1, "ocr_running": 2, "needs_review": 3,
-            "ready_to_generate": 1, "completed_today": 4, "errors": 1,
+            "total": 2, "new": 0, "ocr_running": 1, "needs_review": 0,
+            "ready_to_generate": 1, "completed": 0, "errors": 0,
         }
 
     def list_dashboard_documents(self, status_filter="All"):
@@ -54,17 +54,23 @@ class Coordinator:
         self.retried.append(document_id)
 
 
-def test_dashboard_renders_summary_queue_and_filters(app):
+class PartiallyFailingCoordinator(Coordinator):
+    def queue_generation(self, document_id):
+        if document_id == 3:
+            raise RuntimeError("output folder unavailable")
+        super().queue_generation(document_id)
+
+
+def test_dashboard_renders_summary_queue_and_clickable_tiles(app):
     widget = DashboardWidget(DashboardDatabase())
     assert widget.table.rowCount() == 2
-    assert "2" in widget.summary_labels["ocr_running"].text()
-    assert tuple(widget.status_filter.itemText(index)
-                 for index in range(widget.status_filter.count())) == STATUS_FILTERS
+    assert "2" in widget.summary_buttons["all"].text()
+    assert "1" in widget.summary_buttons["ready_to_generate"].text()
     assert widget.table.item(0, 0).text() == "a.pdf"
     assert widget.table.item(0, 3).text() == "8/8"
-    widget.status_filter.setCurrentText("OCR running")
+    widget.summary_buttons["ready_to_generate"].click()
     assert widget.table.rowCount() == 1
-    assert widget.table.item(0, 0).text() == "b.pdf"
+    assert widget.table.item(0, 0).text() == "a.pdf"
 
 
 def test_dashboard_opens_review_and_queues_generation(app):
@@ -77,6 +83,40 @@ def test_dashboard_opens_review_and_queues_generation(app):
     widget.generate_selected()
     assert opened == [1]
     assert coordinator.generated == [1]
+
+
+def test_dashboard_queues_every_ready_document_after_one_confirmation(app):
+    database = DashboardDatabase()
+    database.list_dashboard_documents = lambda status_filter="ALL": [
+        {"id": 1, "filepath": "/in/a.pdf", "overall_status": "READY_TO_GENERATE"},
+        {"id": 3, "filepath": "/in/c.pdf", "overall_status": "READY_TO_GENERATE"},
+    ] if status_filter == "READY_TO_GENERATE" else []
+    coordinator = Coordinator()
+    confirmations = []
+    widget = DashboardWidget(
+        database, coordinator,
+        bulk_confirm=lambda count: confirmations.append(count) or True,
+    )
+    widget.generate_all_ready()
+    assert confirmations == [2]
+    assert coordinator.generated == [1, 3]
+    assert "Queued 2 documents" in widget.status.text()
+
+
+def test_bulk_generation_continues_after_one_document_fails(app):
+    database = DashboardDatabase()
+    database.list_dashboard_documents = lambda status_filter="ALL": [
+        {"id": 1, "filepath": "/in/a.pdf", "overall_status": "READY_TO_GENERATE"},
+        {"id": 3, "filepath": "/in/c.pdf", "overall_status": "READY_TO_GENERATE"},
+        {"id": 4, "filepath": "/in/d.pdf", "overall_status": "READY_TO_GENERATE"},
+    ] if status_filter == "READY_TO_GENERATE" else []
+    coordinator = PartiallyFailingCoordinator()
+    widget = DashboardWidget(
+        database, coordinator, bulk_confirm=lambda _count: True)
+    widget.generate_all_ready()
+    assert coordinator.generated == [1, 4]
+    assert "Queued 2 documents" in widget.status.text()
+    assert "1 failed" in widget.status.text()
 
 
 def test_configuration_persists_inbox_and_automation(app, tmp_path):

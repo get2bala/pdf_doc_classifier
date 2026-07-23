@@ -72,6 +72,6 @@ def test_main_window_exposes_configuration_and_database_actions(app, tmp_path):
     window = ClassifierWindow(tmp_path / "app.sqlite3")
     try:
         assert window.configuration_action.text() == "Configuration…"
-        assert window.database_action.text() == "View database…"
+        assert window.database_action.text() == "View Database…"
     finally:
         window.close()

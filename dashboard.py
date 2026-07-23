@@ -3,22 +3,28 @@
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QGridLayout,
+    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 
-STATUS_FILTERS = (
-    "All", "Needs attention", "OCR running", "Needs review",
-    "Ready to generate", "Completed", "Errors",
-)
 FILTER_VALUES = {
     "All": "ALL", "Needs attention": "NEEDS_ATTENTION",
-    "OCR running": "OCR_RUNNING", "Needs review": "NEEDS_REVIEW",
+    "Extracting text": "OCR_RUNNING", "Needs review": "NEEDS_REVIEW",
     "Ready to generate": "READY_TO_GENERATE", "Completed": "COMPLETED",
-    "Errors": "ERRORS",
+    "Generating": "GENERATION_RUNNING", "Errors": "ERRORS",
+}
+DISPLAY_STATUS = {
+    "NEW": "New",
+    "OCR_RUNNING": "Extracting Text",
+    "NEEDS_REVIEW": "Needs Review",
+    "READY_TO_GENERATE": "Ready to Generate",
+    "GENERATION_RUNNING": "Generating",
+    "COMPLETED": "Completed",
+    "ERRORS": "Error",
 }
 
 
@@ -72,53 +78,55 @@ class DashboardWidget(QWidget):
 
     HEADERS = ("File", "Employee", "Pages", "Text", "Review", "Output", "Status")
     SUMMARY_KEYS = (
-        ("new", "New"), ("ocr_running", "Text extraction"),
-        ("needs_review", "Needs review"), ("ready_to_generate", "Ready to generate"),
-        ("completed_today", "Completed today"), ("errors", "Errors"),
+        ("all", "All Documents", "ALL"),
+        ("new", "New", "NEW"),
+        ("needs_review", "Needs Review", "NEEDS_REVIEW"),
+        ("ready_to_generate", "Ready to Generate", "READY_TO_GENERATE"),
+        ("completed", "Completed", "COMPLETED"),
+        ("errors", "Errors", "ERRORS"),
     )
 
-    def __init__(self, database, coordinator=None, parent=None):
+    def __init__(self, database, coordinator=None, bulk_confirm=None, parent=None):
         super().__init__(parent)
         self.database = database
         self.coordinator = coordinator
+        self.bulk_confirm = bulk_confirm or self._confirm_bulk_generation
         self._rows = []
+        self._active_filter = "ALL"
         layout = QVBoxLayout(self)
         title = QHBoxLayout()
-        heading = QLabel("<h2>Document processing dashboard</h2>")
+        heading = QLabel("<h2>Dashboard</h2>")
         title.addWidget(heading)
         title.addStretch()
-        self.refresh_button = QPushButton("Refresh")
-        title.addWidget(self.refresh_button)
         layout.addLayout(title)
 
-        cards = QGridLayout()
-        self.summary_labels = {}
-        for index, (key, caption) in enumerate(self.SUMMARY_KEYS):
-            card = QLabel()
-            card.setAlignment(Qt.AlignCenter)
+        self.summary_layout = QGridLayout()
+        self.summary_layout.setHorizontalSpacing(12)
+        self.summary_buttons = {}
+        self.summary_group = QButtonGroup(self)
+        self.summary_group.setExclusive(True)
+        for index, (key, caption, status_filter) in enumerate(self.SUMMARY_KEYS):
+            card = QPushButton("0\n{}".format(caption))
+            card.setCheckable(True)
             card.setMinimumHeight(66)
-            card.setStyleSheet(
-                "QLabel { background:#f4f6f8; border:1px solid #d5d9dd;"
-                " border-radius:6px; padding:8px; }")
-            self.summary_labels[key] = card
-            cards.addWidget(card, 0, index)
-            card.setText("<b>0</b><br>{}".format(caption))
-        layout.addLayout(cards)
+            card.setObjectName("SummaryCard")
+            card.setAccessibleName(
+                "{} documents; filter dashboard".format(caption))
+            card.clicked.connect(
+                lambda _checked=False, value=status_filter:
+                self.set_summary_filter(value))
+            self.summary_buttons[key] = card
+            self.summary_group.addButton(card)
+            self.summary_layout.addWidget(card, 0, index)
+        self.summary_buttons["all"].setChecked(True)
+        layout.addLayout(self.summary_layout)
 
-        bar = QHBoxLayout()
-        bar.addWidget(QLabel("Show"))
-        self.status_filter = QComboBox()
-        self.status_filter.addItems(STATUS_FILTERS)
-        bar.addWidget(self.status_filter)
-        bar.addStretch()
-        self.open_button = QPushButton("Open for review")
-        self.retry_button = QPushButton("Retry failed job")
-        self.generate_button = QPushButton("Queue generation")
-        self.manifest_button = QPushButton("View completion manifest")
-        for button in (self.open_button, self.retry_button, self.generate_button,
-                       self.manifest_button):
-            bar.addWidget(button)
-        layout.addLayout(bar)
+        from PySide6.QtWidgets import QMenu
+        self.document_menu = QMenu(self)
+        self.retry_action = QAction("Retry Processing", self)
+        self.manifest_action = QAction("View Results", self)
+        self.document_menu.addAction(self.retry_action)
+        self.document_menu.addAction(self.manifest_action)
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
@@ -126,19 +134,22 @@ class DashboardWidget(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setToolTip(
+            "Double-click a document for its next action. "
+            "Right-click for processing options.")
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         layout.addWidget(self.table, 1)
         self.status = QLabel()
         layout.addWidget(self.status)
 
-        self.refresh_button.clicked.connect(self.refresh)
-        self.status_filter.currentTextChanged.connect(self.refresh)
-        self.open_button.clicked.connect(self.open_selected)
-        self.retry_button.clicked.connect(self.retry_selected)
-        self.generate_button.clicked.connect(self.generate_selected)
-        self.manifest_button.clicked.connect(self.show_manifest)
-        self.table.doubleClicked.connect(lambda _index: self.open_selected())
+        self.retry_action.triggered.connect(self.retry_selected)
+        self.manifest_action.triggered.connect(self.show_manifest)
+        self.table.doubleClicked.connect(lambda _index: self.run_primary_action())
+        self.table.customContextMenuRequested.connect(
+            self.show_document_menu)
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(2000)
@@ -149,16 +160,24 @@ class DashboardWidget(QWidget):
     def _summary(self):
         if hasattr(self.database, "get_dashboard_summary"):
             result = self.database.get_dashboard_summary()
-            return {str(key).lower(): value for key, value in result.items()}
+            summary = {
+                str(key).lower(): value for key, value in result.items()}
+            summary.setdefault("all", summary.get("total", sum(
+                int(summary.get(key, 0)) for key in (
+                    "new", "ocr_running", "needs_review",
+                    "ready_to_generate", "generation_running",
+                    "completed", "errors"))))
+            return summary
         rows = self._documents("All")
         statuses = [str(_value(row, "overall_status", "status", default="")).upper()
                     for row in rows]
         return {
+            "all": len(statuses),
             "new": sum(status in ("NEW", "IN_PROGRESS") for status in statuses),
             "ocr_running": sum(status == "OCR_RUNNING" for status in statuses),
             "needs_review": sum(status == "NEEDS_REVIEW" for status in statuses),
             "ready_to_generate": sum(status == "READY_TO_GENERATE" for status in statuses),
-            "completed_today": sum(status in ("COMPLETED", "EXPORTED") for status in statuses),
+            "completed": sum(status in ("COMPLETED", "EXPORTED") for status in statuses),
             "errors": sum("ERROR" in status or "FAILED" in status for status in statuses),
         }
 
@@ -177,16 +196,17 @@ class DashboardWidget(QWidget):
 
     def refresh(self):
         summary = self._summary()
-        for key, caption in self.SUMMARY_KEYS:
+        for key, caption, _status_filter in self.SUMMARY_KEYS:
             value = summary.get(key, summary.get(key.upper(), 0))
-            if key == "completed_today" and not value:
-                value = summary.get("COMPLETED", 0)
-            self.summary_labels[key].setText(
-                "<b style='font-size:20px'>{}</b><br>{}".format(value, caption))
+            self.summary_buttons[key].setText(
+                "{}\n{}".format(value, caption))
+            self.summary_buttons[key].setAccessibleName(
+                "{}: {} documents; filter dashboard".format(caption, value))
         selected_id = self.selected_document_id()
-        requested = self.status_filter.currentText()
+        requested = self._active_filter
         rows = list(self._documents(requested))
-        if requested != "All" and not hasattr(self.database, "list_dashboard_documents"):
+        if requested != "ALL" and not hasattr(
+                self.database, "list_dashboard_documents"):
             wanted = requested.replace(" ", "_").upper()
             rows = [row for row in rows if wanted in
                     str(_value(row, "overall_status", "status", default="")).upper()]
@@ -199,15 +219,25 @@ class DashboardWidget(QWidget):
             output_done = _value(row, "outputs_verified", "verified_outputs",
                                  "output_completed", default=0)
             output_total = _value(row, "outputs_total", "output_total", default=0)
+            text_progress = "{}/{}".format(ocr_done, total)
+            failed = int(_value(row, "ocr_failed", default=0))
+            if failed:
+                text_progress += " · {} failed".format(failed)
             values = (
                 Path(_value(row, "filepath", "filename", default="")).name,
                 str(_value(row, "employee_id", default="—")),
                 str(total),
-                "{}/{}".format(ocr_done, total),
+                text_progress,
                 "{}/{}".format(review_done, total),
                 ("{}/{}".format(output_done, output_total) if output_total
                  else ("{} verified".format(output_done) if output_done else "—")),
-                str(_value(row, "overall_status", "status", default="New")).replace("_", " ").title(),
+                DISPLAY_STATUS.get(
+                    str(_value(
+                        row, "overall_status", "status",
+                        default="NEW")).upper(),
+                    str(_value(
+                        row, "overall_status", "status",
+                        default="New")).replace("_", " ").title()),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -216,9 +246,27 @@ class DashboardWidget(QWidget):
                 self.table.setItem(row_index, column, item)
             if int(row["id"]) == selected_id:
                 self.table.selectRow(row_index)
-        self.status.setText("{} document{} shown".format(
-            len(rows), "" if len(rows) == 1 else "s"))
+        message = "{} document{} shown".format(
+            len(rows), "" if len(rows) == 1 else "s")
+        notice = getattr(self.coordinator, "last_notice", None)
+        error = getattr(self.coordinator, "last_error", None)
+        if error:
+            message += " — Background error: {}".format(error)
+        elif notice:
+            message += " — {}".format(notice)
+        self.status.setText(message)
         self._update_actions()
+
+    def set_summary_filter(self, status_filter):
+        self._active_filter = status_filter
+        for _key, _caption, value in self.SUMMARY_KEYS:
+            if value == status_filter:
+                matching_key = next(
+                    key for key, _caption2, value2 in self.SUMMARY_KEYS
+                    if value2 == value)
+                self.summary_buttons[matching_key].setChecked(True)
+                break
+        self.refresh()
 
     def selected_document_id(self):
         row = self.table.currentRow()
@@ -232,13 +280,35 @@ class DashboardWidget(QWidget):
     def _update_actions(self):
         row = self.selected_document()
         enabled = row is not None
-        self.open_button.setEnabled(enabled)
         status = str(_value(row or {}, "overall_status", "status", default="")).upper()
-        self.retry_button.setEnabled(enabled and ("ERROR" in status or "FAILED" in status))
-        self.generate_button.setEnabled(enabled and status in
-                                        ("READY", "APPROVED", "READY_TO_GENERATE"))
-        self.manifest_button.setEnabled(enabled and status in
+        self.retry_action.setEnabled(
+            enabled and (
+                "ERROR" in status or "FAILED" in status
+                or int(_value(row or {}, "ocr_failed", default=0)) > 0
+            ))
+        self.manifest_action.setEnabled(enabled and status in
                                         ("COMPLETE", "COMPLETED", "EXPORTED"))
+
+    def run_primary_action(self):
+        row = self.selected_document()
+        if not row:
+            return
+        status = str(_value(
+            row, "overall_status", "status", default="")).upper()
+        if status in ("READY", "APPROVED", "READY_TO_GENERATE"):
+            self.generate_selected()
+        elif status in ("COMPLETE", "COMPLETED", "EXPORTED"):
+            self.show_manifest()
+        else:
+            self.open_selected()
+
+    def show_document_menu(self, position):
+        index = self.table.indexAt(position)
+        if index.isValid():
+            self.table.selectRow(index.row())
+        if self.selected_document() is not None:
+            self.document_menu.exec(
+                self.table.viewport().mapToGlobal(position))
 
     def open_selected(self):
         identifier = self.selected_document_id()
@@ -272,6 +342,51 @@ class DashboardWidget(QWidget):
         if identifier is not None:
             self._coordinator_call(("queue_generation", "enqueue_generation",
                                     "generate_document"), identifier)
+
+    def _confirm_bulk_generation(self, count):
+        answer = QMessageBox.question(
+            self, "Generate ready documents",
+            "Queue output generation for {} ready document{}?".format(
+                count, "" if count == 1 else "s"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        return answer == QMessageBox.Yes
+
+    def generate_all_ready(self):
+        """Queue every currently ready source while isolating per-file errors."""
+        ready = list(self._documents("Ready to generate"))
+        if not ready:
+            self.status.setText("No documents are ready to generate.")
+            return
+        if self.coordinator is None:
+            self.status.setText("Background processing is unavailable.")
+            return
+        method = next((
+            getattr(self.coordinator, name, None)
+            for name in ("queue_generation", "enqueue_generation",
+                         "generate_document")
+            if getattr(self.coordinator, name, None)
+        ), None)
+        if method is None:
+            self.status.setText("Generation is unavailable.")
+            return
+        if not self.bulk_confirm(len(ready)):
+            return
+        queued = 0
+        failed = []
+        for document in ready:
+            try:
+                method(int(document["id"]))
+                queued += 1
+            except Exception as exc:
+                failed.append("{}: {}".format(
+                    Path(_value(document, "filepath", default="Document")).name,
+                    exc))
+        self.refresh()
+        message = "Queued {} document{} for generation.".format(
+            queued, "" if queued == 1 else "s")
+        if failed:
+            message += " {} failed: {}".format(len(failed), "; ".join(failed))
+        self.status.setText(message)
 
     def show_manifest(self):
         document = self.selected_document()

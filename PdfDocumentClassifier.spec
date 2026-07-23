@@ -1,8 +1,15 @@
 # PyInstaller recipe: pyinstaller PdfDocumentClassifier.spec
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+import sys
 
 datas = collect_data_files("pypdfium2")
+datas += [("assets/pdf-classifier-icon-256.png", "assets")]
 binaries = collect_dynamic_libs("pypdfium2")
+app_icon = (
+    "assets/pdf-classifier.icns"
+    if sys.platform == "darwin"
+    else "assets/pdf-classifier.ico"
+)
 
 a = Analysis(
     ["run_app.py"],
@@ -29,4 +36,5 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=app_icon,
 )

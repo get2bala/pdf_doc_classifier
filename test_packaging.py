@@ -6,3 +6,8 @@ def test_project_metadata_and_entrypoint_exist():
     metadata = Path("pyproject.toml").read_text(encoding="utf-8")
     assert 'pdf-document-classifier = "main_window:main"' in metadata
     assert Path("PdfDocumentClassifier.spec").is_file()
+    assert Path("assets/pdf-classifier-icon-256.png").is_file()
+    assert Path("assets/pdf-classifier.ico").is_file()
+    assert Path("assets/pdf-classifier.icns").is_file()
+    assert "icon=app_icon" in Path(
+        "PdfDocumentClassifier.spec").read_text(encoding="utf-8")

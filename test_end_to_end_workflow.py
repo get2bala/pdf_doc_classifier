@@ -69,6 +69,6 @@ def test_main_window_exposes_complete_lifecycle_controls(app, tmp_path):
         assert window.ocr_all_button.text() == "Extract text from all pages"
         assert window.reject_button.text() == "Reject suggestion"
         assert window.delete_document_action.text().startswith("Remove selected")
-        assert window.database_action.text() == "View database…"
+        assert window.database_action.text() == "View Database…"
     finally:
         window.close()

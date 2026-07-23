@@ -123,6 +123,14 @@ class SettingsDialog(QDialog):
         self.minimum_matches.setRange(1, 99)
         self.minimum_matches.setValue(int(
             self.settings.value("classification/minimum_matches", 2)))
+        self.appearance = QComboBox()
+        self.appearance.addItem("Use system setting", "SYSTEM")
+        self.appearance.addItem("Light", "LIGHT")
+        self.appearance.addItem("Dark", "DARK")
+        appearance = str(self.settings.value(
+            "appearance/mode", "SYSTEM", str)).upper()
+        self.appearance.setCurrentIndex(max(
+            self.appearance.findData(appearance), 0))
         form.addRow("Inbox folder", self._path_editor(self.input_directory))
         form.addRow("Output folder", self._path_editor(self.output_directory))
         form.addRow("Completed folder", self._path_editor(self.completed_directory))
@@ -132,6 +140,7 @@ class SettingsDialog(QDialog):
         form.addRow("Assignment mode", self.automation_mode)
         form.addRow("Minimum rule score", self.minimum_score)
         form.addRow("Minimum keyword matches", self.minimum_matches)
+        form.addRow("Appearance", self.appearance)
         form.addRow("", QLabel(
             "Folder and automation changes are picked up by the background coordinator."))
         tabs.addTab(general, "General")
@@ -222,6 +231,7 @@ class SettingsDialog(QDialog):
             "classification/automation_mode", self.automation_mode.currentData())
         self.settings.setValue("classification/minimum_score", self.minimum_score.value())
         self.settings.setValue("classification/minimum_matches", self.minimum_matches.value())
+        self.settings.setValue("appearance/mode", self.appearance.currentData())
         self.settings.sync()
         self.accept()
 

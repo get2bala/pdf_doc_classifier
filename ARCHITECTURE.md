@@ -22,6 +22,8 @@ workflow has been validated. This version uses:
 - one PDF module for validation, preview, and staged export;
 - one deterministic keyword suggestion module using embedded PDF text;
 - one queue-first PySide6 dashboard and classification workspace;
+- one cross-document review workspace backed by SQLite FTS5 and a bounded,
+  asynchronous thumbnail cache;
 - one persistent SQLite job coordinator running outside the UI thread.
 
 ## Safety invariants
@@ -35,6 +37,8 @@ workflow has been validated. This version uses:
 - Missing/failed text extraction never blocks manual classification.
 - A document is complete only when every planned output has a verified manifest.
 - Interrupted jobs are recovered from persisted heartbeat and attempt state.
+- Review commits are transactional and reject stale batch snapshots.
+- Review queries never return more than 50 items; thumbnail memory is bounded.
 
 ## Intentionally deferred
 
@@ -46,4 +50,5 @@ workflow has been validated. This version uses:
 
 Configuration, a safe read-only database viewer, schema migration, document
 lifecycle controls, stable Inbox polling, background jobs, dashboard progress,
-output manifests, restart recovery, and a PyInstaller recipe are included.
+cross-document full-text review, bulk generation, output manifests, restart
+recovery, and a PyInstaller recipe are included.

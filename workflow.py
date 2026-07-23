@@ -126,6 +126,7 @@ class WorkflowCoordinator:
         self._stop_event = threading.Event()
         self._thread = None  # type: Optional[threading.Thread]
         self.last_error = None  # type: Optional[str]
+        self.last_notice = None  # type: Optional[str]
 
     @classmethod
     def from_settings(cls, database, **overrides):
@@ -173,11 +174,29 @@ class WorkflowCoordinator:
         if self.is_running:
             return
         self.database.recover_stale_jobs()
+        self._queue_incomplete_text_jobs()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run, name="document-workflow", daemon=True
         )
         self._thread.start()
+
+    def _queue_incomplete_text_jobs(self):
+        """Retry failed legacy/extraction pages after restart.
+
+        This also migrates documents processed by the former Tesseract adapter:
+        their FAILED page_analysis rows are picked up by
+        ``list_pending_ocr_pages`` and replaced by embedded-text results.
+        """
+        if not self.automatic_ocr:
+            return
+        for document in self.database.list_source_documents():
+            if document.get("generation_status") == "COMPLETE":
+                continue
+            pages = self.database.list_pending_ocr_pages(document["id"])
+            if pages:
+                self.database.create_background_job(
+                    document["id"], "OCR", len(pages), max_attempts=3)
 
     def stop(self, timeout: float = 5.0):
         self._stop_event.set()
@@ -204,7 +223,12 @@ class WorkflowCoordinator:
         for item in self.scanner.scan_once(self.inbox):
             try:
                 identity = self.hash_func(item.path)
-                if self.database.find_document_by_sha256(identity):
+                existing = self.database.find_document_by_sha256(identity)
+                if existing:
+                    self.last_notice = (
+                        "Duplicate ignored: {} has the same content as {}.".format(
+                            Path(item.path).name,
+                            Path(existing["filepath"]).name))
                     continue
                 document_id = self.ingest_file(item.path, file_sha256=identity)
                 registered.append(document_id)

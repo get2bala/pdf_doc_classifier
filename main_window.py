@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QActionGroup, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -16,6 +16,13 @@ from database import DatabaseManager
 from pdf_engine import PdfExporter, page_count, render_page
 from dialogs import DatabaseViewerDialog, SettingsDialog, app_settings
 from dashboard import DashboardWidget
+from review_workspace import ReviewWorkspace
+from thumbnail_adapter import QtThumbnailAdapter
+from thumbnail_service import ThumbnailService
+from appearance import apply_appearance, follow_system_appearance
+from help_dialogs import (
+    AboutDialog, KeyboardShortcutsDialog, UserGuideDialog, asset_path,
+)
 
 
 DEFAULT_CATEGORIES = [
@@ -52,10 +59,24 @@ class ClassifierWindow(QMainWindow):
         self.db = database or DatabaseManager(str(db_path or data_dir / "classifier.sqlite3"))
         self.coordinator = coordinator
         self.settings = app_settings(self.db)
+        application = QApplication.instance()
+        if application is not None:
+            application.setApplicationName("PDF Document Classifier")
+            application.setApplicationDisplayName("PDF Document Classifier")
+            application.setOrganizationName("PDF Document Classifier")
+            apply_appearance(
+                application,
+                self.settings.value("appearance/mode", "SYSTEM", str),
+            )
+            follow_system_appearance(application)
         self._seed_categories()
         self.document_id = None
         self.thread_pool = QThreadPool.globalInstance()
-        self.setWindowTitle("PDF Document Classifier — Local Offline")
+        self.setWindowTitle("PDF Document Classifier")
+        icon_path = asset_path("pdf-classifier-icon-256.png")
+        self.setWindowIcon(QIcon(str(icon_path)))
+        if application is not None:
+            application.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1250, 820)
         self._build_ui()
         self._reload_documents()
@@ -67,20 +88,58 @@ class ClassifierWindow(QMainWindow):
                 self.db.add_category(name, keywords, policy, pattern)
 
     def _build_ui(self):
-        application_menu = self.menuBar().addMenu("Application")
-        self.configuration_action = application_menu.addAction("Configuration…")
-        self.database_action = application_menu.addAction("View database…")
-        self.delete_document_action = application_menu.addAction("Remove selected document…")
+        file_menu = self.menuBar().addMenu("&File")
+        self.import_pdf_action = file_menu.addAction("&Import PDF…")
+        self.import_pdf_action.setShortcut(
+            QKeySequence(QKeySequence.StandardKey.Open))
+        self.generate_ready_action = file_menu.addAction(
+            "Generate Ready Documents…")
+        file_menu.addSeparator()
+        self.delete_document_action = file_menu.addAction(
+            "Remove selected document…")
+        file_menu.addSeparator()
+        self.exit_action = file_menu.addAction("E&xit")
+        self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+
+        view_menu = self.menuBar().addMenu("&View")
+        navigation_group = QActionGroup(self)
+        navigation_group.setExclusive(True)
+        self.dashboard_action = view_menu.addAction("&Dashboard")
+        self.dashboard_action.setCheckable(True)
+        self.dashboard_action.setShortcut(QKeySequence("Ctrl+1"))
+        navigation_group.addAction(self.dashboard_action)
+        self.review_workspace_action = view_menu.addAction("&Review Workspace")
+        self.review_workspace_action.setCheckable(True)
+        self.review_workspace_action.setShortcut(QKeySequence("Ctrl+2"))
+        navigation_group.addAction(self.review_workspace_action)
+        self.dashboard_action.setChecked(True)
+        view_menu.addSeparator()
+        self.refresh_action = view_menu.addAction("&Refresh")
+        self.refresh_action.setShortcut(QKeySequence.StandardKey.Refresh)
+
+        tools_menu = self.menuBar().addMenu("&Tools")
+        self.configuration_action = tools_menu.addAction("Configuration…")
+        self.database_action = tools_menu.addAction("View Database…")
+
+        help_menu = self.menuBar().addMenu("&Help")
+        self.help_action = help_menu.addAction("&User Guide")
+        self.help_action.setShortcut(
+            QKeySequence(QKeySequence.StandardKey.HelpContents))
+        self.shortcuts_action = help_menu.addAction("&Keyboard Shortcuts")
+        self.shortcuts_action.setShortcut(QKeySequence("Ctrl+/"))
+        help_menu.addSeparator()
+        self.about_action = help_menu.addAction(
+            "About PDF Document Classifier")
         workspace = QWidget()
+        self.workspace_widget = workspace
         layout = QVBoxLayout(workspace)
         toolbar = QHBoxLayout()
-        self.dashboard_button = QPushButton("← Dashboard")
         self.import_button = QPushButton("Import PDF")
         self.employee_input = QLineEdit()
         self.employee_input.setPlaceholderText("Employee ID")
         self.document_list = QListWidget()
         self.document_list.setMaximumHeight(90)
-        toolbar.addWidget(self.dashboard_button)
+        toolbar.addWidget(QLabel("Document Review"))
         toolbar.addWidget(self.import_button)
         toolbar.addWidget(self.employee_input)
         toolbar.addWidget(QLabel("Imported files:"))
@@ -99,7 +158,7 @@ class ClassifierWindow(QMainWindow):
         self.preview = QLabel("PDF preview")
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(420, 540)
-        self.preview.setStyleSheet("background:#ddd; border:1px solid #aaa")
+        self.preview.setObjectName("PdfPreview")
         center_layout.addWidget(self.header)
         center_layout.addWidget(self.preview, 1)
         splitter.addWidget(center)
@@ -120,7 +179,7 @@ class ClassifierWindow(QMainWindow):
         self.accept_button = QPushButton("Accept suggestion")
         self.reject_button = QPushButton("Reject suggestion")
         self.export_button = QPushButton("Validate & Generate PDFs")
-        self.export_button.setStyleSheet("padding:10px;font-weight:bold")
+        self.export_button.setProperty("primary", True)
         for widget in (self.selection_label, self.category_filter, self.categories,
                        self.assign_button, self.exclude_button, self.reset_button,
                        self.ocr_button, self.ocr_all_button, self.suggestion,
@@ -132,14 +191,37 @@ class ClassifierWindow(QMainWindow):
         splitter.setSizes([260, 700, 290])
         layout.addWidget(splitter, 1)
         self.dashboard = DashboardWidget(self.db, self.coordinator)
+        if self.db.db_path == ":memory:":
+            cache_root = data_dir / "cache" / "thumbnails"
+        else:
+            cache_root = Path(self.db.db_path).expanduser().resolve().parent / \
+                "cache" / "thumbnails"
+        self.thumbnail_adapter = QtThumbnailAdapter(
+            self.db, ThumbnailService(cache_root), parent=self)
+        self.review_workspace = ReviewWorkspace(
+            self.db, thumbnail_service=self.thumbnail_adapter)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.dashboard)
         self.stack.addWidget(workspace)
-        self.setCentralWidget(self.stack)
+        self.stack.addWidget(self.review_workspace)
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(8, 8, 8, 8)
+        shell_layout.addWidget(self.stack, 1)
+        self.setCentralWidget(shell)
 
         self.import_button.clicked.connect(self.import_pdf)
-        self.dashboard_button.clicked.connect(self.show_dashboard)
+        self.import_pdf_action.triggered.connect(self.import_pdf)
+        self.generate_ready_action.triggered.connect(
+            self.dashboard.generate_all_ready)
+        self.dashboard_action.triggered.connect(self.show_dashboard)
+        self.review_workspace_action.triggered.connect(
+            self.show_review_workspace)
+        self.refresh_action.triggered.connect(self.refresh_current_view)
+        self.exit_action.triggered.connect(self.close)
         self.dashboard.document_open_requested.connect(self.open_document_for_review)
+        self.review_workspace.source_open_requested.connect(
+            self.open_document_for_review)
         self.document_list.currentItemChanged.connect(self.open_document)
         self.pages.currentItemChanged.connect(self.show_page)
         self.pages.itemSelectionChanged.connect(self.update_selection)
@@ -156,13 +238,31 @@ class ClassifierWindow(QMainWindow):
         self.configuration_action.triggered.connect(self.open_configuration)
         self.database_action.triggered.connect(self.open_database_viewer)
         self.delete_document_action.triggered.connect(self.delete_document)
+        self.help_action.triggered.connect(
+            lambda: UserGuideDialog(self).exec())
+        self.shortcuts_action.triggered.connect(
+            lambda: KeyboardShortcutsDialog(self).exec())
+        self.about_action.triggered.connect(
+            lambda: AboutDialog(self).exec())
         self.reload_categories()
 
     def show_dashboard(self):
         self.dashboard.refresh()
         self.stack.setCurrentWidget(self.dashboard)
+        self.dashboard_action.setChecked(True)
 
-    def open_document_for_review(self, document_id):
+    def show_review_workspace(self):
+        self.review_workspace.refresh()
+        self.stack.setCurrentWidget(self.review_workspace)
+        self.review_workspace_action.setChecked(True)
+
+    def refresh_current_view(self):
+        current = self.stack.currentWidget()
+        refresh = getattr(current, "refresh", None)
+        if refresh:
+            refresh()
+
+    def open_document_for_review(self, document_id, page_number=None):
         self.document_id = int(document_id)
         self._reload_documents()
         for row in range(self.document_list.count()):
@@ -172,12 +272,24 @@ class ClassifierWindow(QMainWindow):
                 break
         self.reload_pages()
         if self.pages.count():
-            self.pages.setCurrentRow(0)
-        self.stack.setCurrentIndex(1)
+            row = 0
+            if page_number is not None:
+                for index in range(self.pages.count()):
+                    if self.pages.item(index).data(Qt.UserRole) == int(page_number):
+                        row = index
+                        break
+            self.pages.setCurrentRow(row)
+        self.stack.setCurrentWidget(self.workspace_widget)
+        self.dashboard_action.setChecked(False)
+        self.review_workspace_action.setChecked(False)
 
     def open_configuration(self):
         dialog = SettingsDialog(self.db, self.settings, self)
         if dialog.exec():
+            apply_appearance(
+                QApplication.instance(),
+                self.settings.value("appearance/mode", "SYSTEM", str),
+            )
             self.reload_categories()
             if self.coordinator and hasattr(self.coordinator, "reload_settings"):
                 self.coordinator.reload_settings()
@@ -444,7 +556,9 @@ def main():
     from workflow import WorkflowCoordinator
 
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    app.setApplicationName("PDF Document Classifier")
+    app.setApplicationDisplayName("PDF Document Classifier")
+    app.setOrganizationName("PDF Document Classifier")
     data_dir = Path.home() / ".pdf_doc_classifier"
     database = DatabaseManager(str(data_dir / "classifier.sqlite3"))
     settings = app_settings(database)

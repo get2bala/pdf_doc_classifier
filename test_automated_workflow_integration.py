@@ -132,3 +132,24 @@ def test_full_automatic_real_pdf_generation_manifest_and_source_move(tmp_path):
     assert moved.is_file()
     assert database.get_dashboard_summary()["COMPLETED"] == 1
     database.close()
+
+
+def test_startup_requeues_failed_legacy_text_pages(tmp_path):
+    source = tmp_path / "legacy.pdf"
+    make_pdf(source, 1)
+    database = configured_database(tmp_path)
+    document = database.register_discovered_document(
+        str(source), "LEGACY", 1, "legacy-hash")
+    database.save_analysis(
+        document, 1, "", None, None, "OCR failed", "FAILED",
+        "Tesseract executable was not found")
+    database.update_document_workflow(
+        document, ocr_status="COMPLETE_WITH_ERRORS")
+    coordinator = WorkflowCoordinator.from_settings(
+        database, poll_interval=0.1)
+    coordinator.start()
+    coordinator.stop()
+    jobs = database.query_table("background_jobs")["rows"]
+    assert any(job["source_document_id"] == document
+               and job["job_type"] == "OCR" for job in jobs)
+    database.close()
