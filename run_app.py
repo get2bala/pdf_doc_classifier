@@ -1,0 +1,7 @@
+"""Convenient source checkout launcher."""
+
+from main_window import main
+
+
+if __name__ == "__main__":
+    main()

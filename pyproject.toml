@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-document-classifier"
+version = "1.0.0"
+description = "Offline, operator-approved PDF classification and splitting"
+requires-python = ">=3.9"
+dependencies = [
+    "PySide6>=6.5,<7",
+    "pypdf>=5,<7",
+    "pypdfium2>=4,<6",
+    "Pillow>=10,<13",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+package = ["pyinstaller>=6,<7"]
+
+[project.scripts]
+pdf-document-classifier = "main_window:main"
+
+[tool.setuptools]
+py-modules = [
+    "main_window", "database", "pdf_engine", "classifier", "dialogs",
+    "dashboard", "workflow",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["."]
+python_files = ["test_*.py"]
